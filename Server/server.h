@@ -12,8 +12,7 @@
 #include <sys/types.h>
 #include <time.h> 
 
-#define MAX_IN_QUEUE 10
-#define CONNECTION_PORT 5000
-#define BUFFERSIZE 1025
+#include <pthread.h>
+#include <error.h>
 
 #endif
