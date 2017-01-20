@@ -15,4 +15,9 @@
 #include <pthread.h>
 #include <error.h>
 
+typedef struct con {
+	struct in_addr sin_addr;
+	int fd;
+}Connection;
+
 #endif
