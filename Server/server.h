@@ -10,14 +10,15 @@
 #include <errno.h>
 #include <string.h>
 #include <sys/types.h>
-#include <time.h> 
+#include <time.h>
+#include <sys/select.h>
 
 #include <pthread.h>
 #include <error.h>
 
 typedef struct con {
-	struct in_addr sin_addr;
+	uint32_t s_addr;
 	int fd;
-}Connection;
+} Connection;
 
 #endif

@@ -15,9 +15,9 @@ int error_exit(char* message) {
     exit(1);
 }
 
-int verify_connection(struct sockaddr_in conn) {
+int verify_connection(struct in_addr conn) {
     for (int i = 0; i < count; i++) {
-        if (connections[i]->sin_addr == cli_addr.sin_addr) {
+        if (connections[i]->s_addr == conn.s_addr) {
             return 1;
         }
     }
@@ -26,7 +26,17 @@ int verify_connection(struct sockaddr_in conn) {
 }
 
 //Send messages to each connection in the connections array
-int send_message_to_all(char* message) {
+int send_message_to_all(char* message, int n) {
+    //Lock the connections from being messed with by other threads
+    pthread_mutex_lock(&connections_lock);
+    
+    //Write message to each connection
+    for (int i = 0; i < count; i++) {
+        write(connections[i]->fd, message, n);
+    }
+    //Unlock the connections from being messed with by other threads
+    pthread_mutex_unlock(&connections_lock);
+
     return 0;
 }
 
@@ -117,7 +127,7 @@ void* listen_for_new_connection() {
                 if (strncmp(buffer, "CONNECT", 7) == 0) {
                     printf("CONNECTION MADE by on %s\n", ip);
                     newcon = malloc(sizeof(Connection));
-                    newcon->sin_addr = cli_addr.sin_addr;
+                    newcon->s_addr = cli_addr.sin_addr.s_addr;
                     newcon->fd = newsockfd;
 
                     //Lock the connections from being messed with by other threads
@@ -151,7 +161,6 @@ void* listen_for_new_message() {
     char buffer[BUFFERSIZE];
     char ip[BUFFERSIZE];
     struct timeval tv;
-    Connection* newcon = NULL;
 
     tv.tv_sec = 7;  /* 7 Secs read Timeout */
     tv.tv_usec = 0;
@@ -198,7 +207,9 @@ void* listen_for_new_message() {
                 printf("Connection is available\n");
                 //Accept the connction
                 newsockfd = accept(sockfd, (struct sockaddr *) &cli_addr, &clilen);
-                if (verify_connection(cli_addr)) {
+
+                //Message from someone in the pool
+                if (verify_connection(cli_addr.sin_addr)) {
                     //Only allowed to wait for ~7 seconds for confirmation message
                     setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
                     inet_ntop(AF_INET, &cli_addr.sin_addr, &ip, BUFFERSIZE);
@@ -215,14 +226,7 @@ void* listen_for_new_message() {
                         continue;
                     }
 
-                    //Lock the connections from being messed with by other threads
-                    pthread_mutex_lock(&connections_lock);
-
-                    for (int i = 0; i < count; i++) {
-                        write(connections[i]->fd, buffer, n)
-                    }
-                    //Unlock the connections from being messed with by other threads
-                    pthread_mutex_unlock(&connections_lock);
+                    send_message_to_all(buffer, n);
                 }
                 
                 break;
@@ -260,7 +264,7 @@ int main(int argc, char *argv[]) {
         printf("mutex init failed");
         return 1;
     }
-    connections = malloc(sizeof(connection*)*0);
+    connections = malloc(sizeof(Connection*)*0);
 
     //Create connection polling thread
     err = pthread_create(&(tid[0]), NULL, &listen_for_new_connection, NULL);

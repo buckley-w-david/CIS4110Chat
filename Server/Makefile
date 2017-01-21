@@ -2,17 +2,14 @@ CC = gcc
 CFLAGS = -Wall -std=c11 -g
 LDFLAGS =
 
-all: client
+all: server
 
-client: client.o network_functions.o
-	$(CC) $(CFLAGS) client.o network_functions.o -o client
+server: server.o
+	$(CC) $(CFLAGS) server.o -lpthread -o server
 
-client.o: client.c client.h network_functions.o
-	$(CC) $(CFLAGS) -c client.c -o client.o
-
-network_functions.o: network_functions.c network_functions.h
-	$(CC) $(CFLAGS) -c network_functions.c -o network_functions.o
+server.o: server.c server.h
+	$(CC) $(CFLAGS) -c server.c -lpthread -o server.o
 
 clean:
-	rm -rf client *.o
+	rm -rf server *.o
 
