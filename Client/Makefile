@@ -1,17 +1,15 @@
 CC = gcc
-CFLAGS = -Wall -std=c11 -g
+CFLAGS = -Wall -std=c11 -g -rdynamic
+GTK3FLAGS = `pkg-config --cflags gtk+-3.0` `pkg-config --libs gtk+-3.0`
 LDFLAGS =
 
 all: client
 
-client: client.o network_functions.o
-	$(CC) $(CFLAGS) client.o network_functions.o -o client
+client: client.o
+	$(CC) $(CFLAGS) client.o $(GTK3FLAGS) -o client
 
-client.o: client.c client.h network_functions.o
-	$(CC) $(CFLAGS) -c client.c -o client.o
-
-network_functions.o: network_functions.c network_functions.h
-	$(CC) $(CFLAGS) -c network_functions.c -o network_functions.o
+client.o: glade_test.c
+	$(CC) $(CFLAGS) -c glade_test.c $(GTK3FLAGS) -o client.o
 
 clean:
 	rm -rf client *.o
