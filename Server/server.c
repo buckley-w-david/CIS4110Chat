@@ -20,42 +20,9 @@ int error_exit(char* message) {
     exit(1);
 }
 
-static void cleanup_handler(void *arg) {
-   close(*(int*)arg);
-}
-
-int verify_connection(struct in_addr conn) {
-    for (int i = 0; i < count; i++) {
-        if (connections[i]->s_addr == conn.s_addr) {
-            return 1;
-        }
-    }
-
-    return 0;
-}
-
-//Send messages to each connection in the connections array
-int send_message_to_all(char* message, int n) {    
-    //Write message to each connection
-    for (int i = 0; i < count; i++) {
-        if (connections[i]->fd_msg != -1)
-            write(connections[i]->fd_msg, message, n);
-    }
-
-    return 0;
-}
-
-//Listen for new requests to be connected to the pool
-void* listen_for_new_connection() {
-    int sockfd_conn, newsockfd; //Listening fd, as well as one to store incomming connections fd
-    struct sockaddr_in serv_addr_conn, cli_addr; //Server and client address
-    int retval = 0, n = 0, maxfd = -1, index = -1; //error checking variables
-    fd_set rfds; //FD to listen for new activity on
-    socklen_t clilen = 0; //Length of child address
-    char buffer[BUFFERSIZE];
-    char ip[BUFFERSIZE];
+int open_port_listener(int* fd, int port) {
+    struct sockaddr_in serv_addr_conn; //Server and client address
     struct timeval tv;
-    Connection* newcon = NULL;
 
     tv.tv_sec = 10;  /* 10 Secs read Timeout */
     tv.tv_usec = 0;
@@ -64,294 +31,286 @@ void* listen_for_new_connection() {
     memset(&serv_addr_conn, 0, sizeof(serv_addr_conn));
 
     //Create the listening socket
-    sockfd_conn = socket(AF_INET, SOCK_STREAM, 0);
+    *fd = socket(AF_INET, SOCK_STREAM, 0);
 
     //Only allowed to wait for ~10 seconds for messages
-    setsockopt(sockfd_conn, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
+    setsockopt(*fd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
 
-    if (sockfd_conn < 0) { //Make sure that we were actually able to start that (it's bad if we can't, so exit)
-        error_exit("ERROR opening socket");
+    if (*fd < 0) { //Make sure that we were actually able to start that (it's bad if we can't, so exit)
+        error_exit("ERROR on opening socket");
     }
 
     //Initialize listening information
     serv_addr_conn.sin_family = AF_INET;
     serv_addr_conn.sin_addr.s_addr = INADDR_ANY;
-    serv_addr_conn.sin_port = htons(CONNECTION_PORT);
+    serv_addr_conn.sin_port = htons(port);
 
     //Bind listening port to the socket file descriptor
-    if (bind(sockfd_conn, (struct sockaddr*)&serv_addr_conn, sizeof(serv_addr_conn)) == -1) {
-        error_exit("ERROR on binding connection port");
+    if (bind(*fd, (struct sockaddr*)&serv_addr_conn, sizeof(serv_addr_conn)) == -1) {
+        close(*fd);
+        error_exit("ERROR on binding port");
     }
 
     //Start listening on the socket,
-    if (listen(sockfd_conn, MAX_IN_QUEUE) == -1) {
-        error_exit("ERROR on listening to connection port");
+    if (listen(*fd, MAX_IN_QUEUE) == -1) {
+        close(*fd);
+        error_exit("ERROR on listening to port");
     }
 
-    //Length of the child connection address
-    clilen = sizeof(cli_addr);
+    return *fd;
+}
 
-    pthread_cleanup_push(cleanup_handler, &sockfd_conn);
+Connection* confirm_new_connection(int fd) {
+    int newsockfd, n;
+    struct sockaddr_in cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
+    char buffer[BUFFERSIZE];
+    Connection* newconn;
+    struct timeval tv;
+
+    tv.tv_sec = 10;  /* 10 Secs read Timeout */
+    tv.tv_usec = 0;
+
+    newsockfd = accept(fd, (struct sockaddr *)&cli_addr, &clilen); //Accept the new connection
+    printf("New connection from %d\n", cli_addr.sin_addr.s_addr);
+
+    if (newsockfd < 0) {
+        printf("ERROR on accepting connection request");
+        return NULL;
+    }
+
+    //Send client confirmation
+    write(newsockfd, "CONFIRM", 7);
+    
+    //Wait for client to confirm on their end (complete the handshake)
+    n = read(newsockfd, buffer, BUFFERSIZE);
+
+    //Read timed out, or there was some other error reading
+    if (n < 0) { 
+        printf("Unable to confirm new connection\n");
+        close(newsockfd);
+        return NULL;
+    }
+
+    //Client requested to be connected to the pool, so add them
+    if (strncmp(buffer, "CONNECT", 7) == 0) {
+        printf("Completed connection with %d\n", cli_addr.sin_addr.s_addr);
+
+        if ((newconn = malloc(sizeof(Connection))) != NULL) {
+            newconn->s_addr = cli_addr.sin_addr.s_addr;
+            newconn->fd_conn = newsockfd;
+            newconn->fd_msg = -1;
+            setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval)); //read timeout of 10 seconds
+
+            return newconn;
+        } else {
+            printf("Could not allocate more space for connection\n");
+            return NULL;
+        }      
+    }
+
+    return NULL;
+}
+
+void remove_conn_from_pool(int index) {
+    close(connections[index]->fd_conn);
+    close(connections[index]->fd_msg);
+
+    free(connections[index]);
+    for (int i = index; i < count-1; i++) {
+        connections[i] = connections[i+1];
+    }
+    count -= 1;
+    connections = realloc(connections, sizeof(Connection*)*count);
+}
+
+void send_message_to_pool(char* buffer, int n) {
+    //Write message to each connection
+    printf("Sending \"%s\" to pool\n", buffer);
+    for (int i = 0; i < count; i++) {
+        if (connections[i]->fd_msg != -1)
+            write(connections[i]->fd_msg, buffer, n);
+    }
+}
+
+void* listen_for_new_connection() {
+    int conn_listener, maxfd = -1, index = -1, n = 0, retval = 0;
+    char buffer[BUFFERSIZE];
+    fd_set rfds; //FD to listen for new activity on
+    Connection* newconn;
+
+    conn_listener = open_port_listener(&conn_listener, CONNECTION_PORT);
+
     while (1) {
-        //Check the generic port as well as established connections
+        printf("Connection iteration\n");
+
         FD_ZERO(&rfds);
-        FD_SET(sockfd_conn, &rfds);
-        maxfd = sockfd_conn;
+        FD_SET(conn_listener, &rfds);
+        FD_SET(sockfd_conn_interrupt[0], &rfds);
+
+        memset(&buffer, 0, sizeof(buffer));
+
+        maxfd = (conn_listener > sockfd_msg_interrupt[0]) ? (conn_listener) : sockfd_msg_interrupt[0];
         index = -1;
 
         pthread_mutex_lock(&connections_lock);
-            for (int i = 0; i < count; i++) {
-                FD_SET(connections[i]->fd_conn, &rfds);\
-                if (connections[i]->fd_msg > maxfd) {
+        for (int i = 0; i < count; i++) {
+            if (connections[i]->fd_conn != -1) {
+                FD_SET(connections[i]->fd_conn, &rfds);
+                if (connections[i]->fd_conn > maxfd) {
                     maxfd = connections[i]->fd_conn;
                 }
             }
+        }
         pthread_mutex_unlock(&connections_lock);
 
-        memset(&buffer, 0, sizeof(buffer));
-        memset(&ip, 0, sizeof(ip));
-        printf("Connection loop iteration\n");
-
         retval = select(maxfd+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
+        printf("New activity on connect thread\n");
 
         if (retval == -1) {
-            printf("ERROR on select\n");
-            continue;
+            printf("Error on selecting...\n");
         }
 
-        printf("Connection is available, locking...\n");
-        if (FD_ISSET(sockfd_conn, &rfds)) {
-            pthread_mutex_lock(&connections_lock);
-                //Accept the connction
-                newsockfd = accept(sockfd_conn, (struct sockaddr *) &cli_addr, &clilen);
-
-                printf("Conn connection from %d\n", cli_addr.sin_addr.s_addr);
-
-                inet_ntop(AF_INET, &cli_addr.sin_addr, &ip, BUFFERSIZE);
-                printf("recived conn request on %s\n", ip);
-
-                //there was some problem accepting this connection
-                if (newsockfd < 0) {
-                    printf("ERROR on accepting connection request");
-                    pthread_mutex_unlock(&connections_lock);
-                    close(newsockfd);
-                    continue;
-                }
-                //Send client confirmation
-                write(newsockfd, "CONFIRM", 7);
-
-                //Wait for client to confirm on their end (complete the handshake)
-                n = read(newsockfd, buffer, BUFFERSIZE);
-
-                //Read timed out, or there was some other error reading
-                if (n < 0) { 
-                    printf("ERROR reading from socket - CONNECTION\n");
-                    pthread_mutex_unlock(&connections_lock);
-                    close(newsockfd);
-                    continue;
-                }
-
-                //Client requested to be connected to the pool, so add them
-                if (strncmp(buffer, "CONNECT", 7) == 0) {
-                    printf("CONNECTION MADE by %s\n", ip);
-                    newcon = malloc(sizeof(Connection));
-                    newcon->s_addr = cli_addr.sin_addr.s_addr;
-                    newcon->fd_conn = newsockfd;
-                    newcon->fd_msg = -1;
-
-                    //Allocate space and add connection
-                    count += 1;
-                    connections = realloc(connections, sizeof(Connection*)*count);
-                    connections[count-1] = newcon;                    
-                }
-            pthread_mutex_unlock(&connections_lock);
+        pthread_mutex_lock(&connections_lock);
+        if (FD_ISSET(sockfd_conn_interrupt[0], &rfds)) {
+            //We were interrupted
+            printf("Connect thread interrupted\n");
+            n = read(sockfd_msg_interrupt[0], buffer, BUFFERSIZE);
+        } else if (FD_ISSET(conn_listener, &rfds)) {
+            //A new connection is being requested
+            if ((newconn = confirm_new_connection(conn_listener)) != NULL) {
+                printf("Adding connection %d\n", newconn->s_addr);
+                
+                count += 1;
+                connections = realloc(connections, sizeof(Connection*)*count);
+                connections[count-1] = newconn;
+                
+            }
         } else {
-            for(int i = 0; i < count; i++) {
-                if (connections[i]->s_addr == cli_addr.sin_addr.s_addr) {
+            //An existing connection is making a request
+            printf("Existing connection making request\n");
+
+            for (int i = 0; i < count; i++) {
+                if (FD_ISSET(connections[i]->fd_conn, &rfds)) {
                     index = i;
-                    printf("old: %d, new: %d\n", connections[i]->fd_conn, newsockfd);
-                    connections[i]->fd_conn = newsockfd;
                     break;
                 }
             }
+            if (index != -1) {
+                n = read(connections[index]->fd_conn, buffer, BUFFERSIZE);
 
-                if (index != -1) {
-                    n = read(newsockfd, buffer, BUFFERSIZE);
-                    if (n < 0) { 
-                        printf("ERROR reading from socket - CONNECTION\n");
-                        close(newsockfd);
-                        continue;
-                    }
+                //Read timed out, or there was some other error reading
+                if (n <= 0) { 
+                    printf("Unable to read from connection, removing from pool\n");
+                    write(sockfd_msg_interrupt[1], "interrupt", 9);  //Now that connection has been removed from the pool, the message thread should stop listening for it
 
-                    if (strncmp(buffer, "DISCONNECT", 10) == 0) {
-                        free(connections[index]);
-                        for (int i = index; i < count-1; i++) {
-                            connections[i] = connections[i+1];
-                        }
-                        count -= 1;
-                        connections = realloc(connections, sizeof(Connection*)*count);
-                    }
-                }
-            }
-        pthread_mutex_unlock(&connections_lock);
-    }
+                    remove_conn_from_pool(index);
+                } else if (strncmp(buffer, "DISCONNECT", 10) == 0) {
+                    printf("Removing %d from pool\n", connections[index]->s_addr);
+                    write(sockfd_msg_interrupt[1], "interrupt", 9); //Now that connection has been removed from the pool, the message thread should stop listening for it
 
-    pthread_cleanup_pop(1);
-    return NULL;
-}
-
-//Listen for new messages
-void* listen_for_new_message() {
-    int sockfd_msg, newsockfd;
-    int retval = 0, n = 0, index = -1, maxfd = -1, connectfd = 0; //error checking variables
-    struct sockaddr_in serv_addr_msg, cli_addr; //Server and client address
-    socklen_t clilen = 0; //Length of child address
-    struct timeval tv;
-    fd_set rfds; //FD to listen for new activity on
-
-
-    char buffer[BUFFERSIZE];
-    char ip[BUFFERSIZE];
-
-    pthread_cleanup_push(cleanup_handler, &sockfd_msg);
-
-    //Zero out various structures
-    memset(&serv_addr_msg, 0, sizeof(serv_addr_msg));
-    memset(&cli_addr, 0, sizeof(serv_addr_msg));
-    memset(&tv, 0, sizeof(serv_addr_msg));
-
-    tv.tv_sec = 10;  //10 Secs read Timeout 
-    tv.tv_usec = 0;
-
-    //Create the listening socket
-    sockfd_msg = socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd_msg < 0) { //Make sure that we were actually able to start that (it's bad if we can't, so exit)
-        error_exit("ERROR opening message socket");
-    }
-
-    //Only allowed to wait for ~10 seconds for messages
-    setsockopt(sockfd_msg, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
-
-    //Initialize listening information
-    serv_addr_msg.sin_family = AF_INET;
-    serv_addr_msg.sin_addr.s_addr = INADDR_ANY;
-    serv_addr_msg.sin_port = htons(MESSAGE_PORT);
-
-    //Bind listening port to the socket file descriptor
-    if (bind(sockfd_msg, (struct sockaddr*)&serv_addr_msg, sizeof(serv_addr_msg)) == -1) {
-        error_exit("ERROR on binding message port");
-    }
-
-    //Start listening on the socket,
-    if (listen(sockfd_msg, MAX_IN_QUEUE) == -1) {
-        error_exit("ERROR on listening to message port");
-    }
-
-    //Length of the child connection address
-    clilen = sizeof(cli_addr);
-
-    while (1) {
-        printf("Message loop iteration\n");
-        FD_ZERO(&rfds);
-        FD_SET(sockfd_msg, &rfds);
-        memset(&buffer, 0, sizeof(buffer));
-        memset(&ip, 0, sizeof(ip));
-
-        index = -1;
-        connectfd = 0;
-
-        maxfd = sockfd_msg;
-
-        pthread_mutex_lock(&connections_lock);
-            for (int i = 0; i < count; i++) {
-                if (connections[i]->fd_msg != -1) {
-                    FD_SET(connections[i]->fd_msg, &rfds);
-                    if (connections[i]->fd_msg > maxfd) {
-                        maxfd = connections[i]->fd_msg;
-                    }
-                }
-            }
-        pthread_mutex_unlock(&connections_lock);
-        
-
-        retval = select(maxfd+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
-        if (retval == -1) {
-            error_exit("ERROR on MSG select");
-        }
-
-        if (FD_ISSET(sockfd_msg, &rfds)) {
-            printf("Connection on generic socket %d\n", sockfd_msg);
-            connectfd = sockfd_msg;
-        } else {
-            for (int i = 0; i < count; i++) {
-                if (FD_ISSET(connections[i]->fd_msg, &rfds)) {
-                    printf("event on socket %d\n", connections[i]->fd_msg);
-                    connectfd = connections[i]->fd_msg;
-                    index = i;
-                }
-            }
-        }
-
-        printf("Message is available, locking...\n");
-        pthread_mutex_lock(&connections_lock);
-            //Accept the connction
-            if (index == -1) {
-                newsockfd = accept(connectfd, (struct sockaddr *) &cli_addr, &clilen); //Accept the new connection
-                printf("Message connection from %d, fd=%d\n", cli_addr.sin_addr.s_addr, newsockfd);
-
-                //Error reading from the socket
-                if (newsockfd < 0) {
-                    printf("ERROR on accepting message request, wasn't able to accept from %d\n", connectfd);
-                    pthread_mutex_unlock(&connections_lock); //Gotta remember to unlock the mutex before we exit
-                    continue;
-                }
-
-                //Find which (if any) existing connection that the new link is assosiated with
-                for (int i = 0; i < count; i++) {
-                    if (connections[i]->s_addr == cli_addr.sin_addr.s_addr) {
-                        printf("Set MSG %d to %d\n", connections[i]->s_addr, newsockfd);
-                        connections[i]->fd_msg = newsockfd;
-                        break;
-                    }
+                    remove_conn_from_pool(index);
+                } else {
+                    printf("Unknown request, ignoring... %s\n", buffer);
+                    printf("read %d chars\n", n);
                 }
             } else {
-                printf("Reading data from %d...\n", connectfd);
-                n = read(connectfd, buffer, BUFFERSIZE);
-
-                    //Read timed out, or there was some other error reading
-                if (n < 0) { 
-                    printf("ERROR reading from socket - MESSAGE\n");
-                    pthread_mutex_unlock(&connections_lock); //Gotta remember to unlock the mutex before we exit
-                    close(connectfd);
-                    continue;
-                }
-                printf("recieved message \"%s\"\n", buffer);
-                send_message_to_all(buffer, n);
+                printf("Not sure how this could happen...\n");
             }
+        }
         pthread_mutex_unlock(&connections_lock);
     }
-
-    pthread_cleanup_pop(1);
     return NULL;
 }
 
+void* listen_for_new_message() {
+    int msg_listener, maxfd = -1, newsockfd = -1, index = -1, n = 0, retval = 0;
+    char buffer[BUFFERSIZE];
+    struct sockaddr_in cli_addr;
+    socklen_t clilen = sizeof(cli_addr);
+    fd_set rfds; //FD to listen for new activity on
 
-/*
-Planned program flow
+    msg_listener = open_port_listener(&msg_listener, MESSAGE_PORT);
 
-parent thread                                                    connection thread
-  
-Start program
-  |
-Spawn connection thread
-  |                    \------------------------------------------------\         
-  |                                                                      |
-Listen for new messages (port 5000)                          Listen for new connections (port 5001)
-  |                                                                      |
-If message recieved, send to all known other connections     If connection made, add fd to list of known connections
-  |                                                                      |
-Back to listening                                            Back to listening
-*/
+    while (1) {
+        printf("Message iteration\n");
+
+        FD_ZERO(&rfds);
+        FD_SET(msg_listener, &rfds);
+        FD_SET(sockfd_msg_interrupt[0], &rfds);
+
+        memset(&buffer, 0, sizeof(buffer));
+
+        maxfd = (msg_listener > sockfd_msg_interrupt[0]) ? (msg_listener) : sockfd_msg_interrupt[0];
+        index = -1;
+
+        pthread_mutex_lock(&connections_lock);
+        for (int i = 0; i < count; i++) {
+            if (connections[i]->fd_msg != -1) {
+                FD_SET(connections[i]->fd_msg, &rfds);
+                if (connections[i]->fd_msg > maxfd) {
+                    maxfd = connections[i]->fd_msg;
+                }
+            }
+        }
+        pthread_mutex_unlock(&connections_lock);
+
+        retval = select(maxfd+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
+        printf("New activity on message thread\n");
+
+        if (retval == -1) {
+            printf("Error on selecting...\n");
+        }
+
+        pthread_mutex_lock(&connections_lock);
+        if (FD_ISSET(sockfd_msg_interrupt[0], &rfds)) {
+            //We were interrupted
+            printf("Message thread interrupted\n");
+            n = read(sockfd_msg_interrupt[0], buffer, BUFFERSIZE);
+        } else if (FD_ISSET(msg_listener, &rfds)) {
+            //A new connection is being requested
+            printf("New message connection is being requested\n");
+            newsockfd = accept(msg_listener, (struct sockaddr *)&cli_addr, &clilen); //Accept the new connection
+            printf("Setting MSG connection to %d on %d\n", cli_addr.sin_addr.s_addr, newsockfd);
+            
+            for (int i = 0; i < count; i++) {
+                if (connections[i]->s_addr == cli_addr.sin_addr.s_addr) {
+                    connections[i]->fd_msg = newsockfd;
+                    break;
+                }
+            }
+        } else {
+            //An existing connection is making a request
+            printf("Existing msg connection making request\n");
+
+            for (int i = 0; i < count; i++) {
+                if (FD_ISSET(connections[i]->fd_msg, &rfds)) {
+                    index = i;
+                    break;
+                }
+            }
+            if (index != -1) {
+                n = read(connections[index]->fd_msg, buffer, BUFFERSIZE);
+
+                //Read timed out, or there was some other error reading
+                if (n <= 0) { 
+                    printf("Unable to read from connection, removing from pool\n");
+                    write(sockfd_msg_interrupt[1], "interrupt", 9); //Now that connection has been removed from the pool, the connection thread should stop listening for it
+
+                    remove_conn_from_pool(index);
+                } else {
+                    printf("read %d chars\n", n);
+                    send_message_to_pool(buffer, n);
+                }
+            } else {
+                printf("Not sure how this could happen...\n");
+            }
+        }
+        pthread_mutex_unlock(&connections_lock);
+    }
+    return NULL;
+}
+
 
 int main(int argc, char *argv[]) {
     int err;
@@ -377,7 +336,7 @@ int main(int argc, char *argv[]) {
     pipe(sockfd_msg_interrupt);
     pipe(sockfd_conn_interrupt);
 
-    //Kill threads after entering a character
+    //Kill threads after entering a 'q' character
     while (getchar() != 'q') {
         ;//Busy-wait
     }
