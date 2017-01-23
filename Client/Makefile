@@ -5,11 +5,14 @@ LDFLAGS =
 
 all: client
 
-client: client.o
-	$(CC) $(CFLAGS) client.o $(GTK3FLAGS) -o client
+client: client.o network_functions.o
+	$(CC) $(CFLAGS) client.o network_functions.o $(GTK3FLAGS) -o client
 
-client.o: glade_test.c
-	$(CC) $(CFLAGS) -c glade_test.c $(GTK3FLAGS) -o client.o
+client.o: client.c
+	$(CC) $(CFLAGS) -c client.c $(GTK3FLAGS) -o client.o
+
+network_functions.o: network_functions.c network_functions.h
+	$(CC) $(CFLAGS) -c network_functions.c $(GTK3FLAGS) -o network_functions.o
 
 clean:
 	rm -rf client *.o

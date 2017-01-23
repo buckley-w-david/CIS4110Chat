@@ -23,20 +23,8 @@
 #include <net/if.h>
 #include <stdarg.h>
 
-#include <gtk/gtk.h>
-
 #include <pthread.h>
 #include <error.h>
-
-typedef struct text_vars {
-   GtkTextView* history;
-   GtkEntry* input;
-} Widgets;
-
-typedef struct history_update {
-	GtkTextView* history;
-	char* new_text;
-}h_update;
 
 typedef struct con {
 	uint32_t s_addr;
@@ -45,10 +33,5 @@ typedef struct con {
 
 
 int handshake(int sockfd);
-G_MODULE_EXPORT void on_chat_gui_destroy();
-G_MODULE_EXPORT void send_message(GtkButton* button, gpointer user_data);
-G_MODULE_EXPORT void on_server_conn_activate();
-G_MODULE_EXPORT void on_server_diss_activate();
-G_MODULE_EXPORT void on_about_activate();
 
 #endif

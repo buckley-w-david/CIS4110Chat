@@ -18,7 +18,8 @@
 
 typedef struct con {
 	uint32_t s_addr;
-	int fd;
+	int fd_conn;
+	int fd_msg;
 } Connection;
 
 #endif
