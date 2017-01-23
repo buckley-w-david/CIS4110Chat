@@ -12,8 +12,8 @@ int connected = 0;
 pthread_mutex_t socket_lock;
 pthread_mutex_t connection_lock;
 
-int sockfd_conn;
-int sockfd_msg;
+int sockfd_conn = -1;
+int sockfd_msg = -1;
 
 struct sockaddr_in server_conn;
 struct sockaddr_in server_msg;
@@ -22,6 +22,14 @@ void connect_to_server();
 void send_message(char* message, int n);
 
 int error_exit(char* message) {
+    close(sockfd_msg);
+    close(sockfd_conn);
+
+    pthread_cancel(message_thread);
+
+    pthread_mutex_destroy(&socket_lock);
+    pthread_mutex_destroy(&connection_lock);
+
     fprintf(stderr, "%s\n", message);
     exit(1);
 }
@@ -86,11 +94,7 @@ int handshake(int sockfd) {
 
 void* listen_for_new_message() {
     fd_set rfds; //FD to listen for new activity on
-    struct sockaddr_in cli_addr;
-    socklen_t clilen = 0;
     struct timeval tv;
-    char* restrict ip_conn;
-    char* restrict ip_server;
     char buffer[BUFFERSIZE];
     int retval = 0, newsockfd = 0, n = 0;
 
@@ -103,46 +107,19 @@ void* listen_for_new_message() {
         memset(&buffer, 0, sizeof(buffer));
         retval = select(sockfd_msg+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
 
-        switch (retval) {
-            case -1: //Something went wrong
-                error_exit("ERROR on select");
-                break;
-            case 1: //Connection was made
-                printf("Connection is available - Message\n");
-                //Accept the connction
-                newsockfd = accept(sockfd_msg, (struct sockaddr *)&cli_addr, &clilen);
-
-                ip_conn = malloc(sizeof(char)*BUFFERSIZE);
-                ip_server = malloc(sizeof(char)*BUFFERSIZE);
-                inet_ntop(AF_INET, &cli_addr.sin_addr, ip_conn, BUFFERSIZE);
-                inet_ntop(AF_INET, &server_msg.sin_addr, ip_server, BUFFERSIZE);
-
-                //Message from someone in the pool
-                if (strncmp(ip_conn, ip_server, strlen(ip_server)) == 0) {
-                    //Only allowed to wait for ~7 seconds for confirmation message
-                    setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
-                    //there was some problem accepting this connection
-                    if (newsockfd < 0) {
-                        error_exit("ERROR on accept");
-                    }
-
-                    n = read(newsockfd, buffer, BUFFERSIZE);
-                    if (n < 0) { 
-                        printf("ERROR reading from socket\n");
-                        close(newsockfd);
-                        continue;
-                    }
-                    printf("Recieved message: %s\n", buffer);
-                }
-                free(ip_conn);
-                free(ip_server);
-                
-                break;
-            default:
-                printf("Not sure what happened here");
-                break;
+        if (retval == -1) {
+            error_exit("ERROR on select");
         }
+
+        printf("Connection is available - Message\n");
+        n = read(sockfd_msg, buffer, BUFFERSIZE);
+        if (n < 0) {
+            error_exit("ERROR on read");
+        }
+
+        printf("Recieved message: \"%s\"\n", buffer);
     }
+
     return NULL;
 }
 
@@ -210,16 +187,13 @@ void connect_to_server()
             }
 
             connected = 1;
-            sleep(5);
 
-            printf("Writting message...\n");
-            write(sockfd_msg, "this is a message", 17);
-            
             err = pthread_create(&(message_thread), NULL, &listen_for_new_message, NULL);
             if (err != 0) {
                 error_exit("Can't create thread");
             }
             printf("Connected to server, awaiting messages...\n");
+            
         }
     pthread_mutex_unlock(&connection_lock);
 }

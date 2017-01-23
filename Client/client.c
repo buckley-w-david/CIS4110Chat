@@ -10,15 +10,27 @@ pthread_t message_thread;
 int connected = 0;
 
 pthread_mutex_t socket_lock;
+pthread_mutex_t connection_lock;
 
-int sockfd_conn;
-int sockfd_msg;
+int sockfd_conn = -1;
+int sockfd_msg = -1;
+
+int sockfd_msg_interrupt[2];
 
 struct sockaddr_in server_conn;
 struct sockaddr_in server_msg;
 
 int error_exit(char* message) {
     gtk_main_quit();
+
+    close(sockfd_msg);
+    close(sockfd_conn);
+
+    pthread_cancel(message_thread);
+
+    pthread_mutex_destroy(&socket_lock);
+    pthread_mutex_destroy(&connection_lock);
+
     fprintf(stderr, "%s\n", message);
     exit(1);
 }
@@ -29,6 +41,18 @@ int main(int argc, char *argv[])
     GtkWidget*  window;
     Widgets* widg = malloc(sizeof(Widgets));
 
+    pipe(sockfd_msg_interrupt);
+
+    if (pthread_mutex_init(&socket_lock, NULL) != 0) {
+        printf("mutex init failed");
+        return 1;
+    }
+
+    if (pthread_mutex_init(&connection_lock, NULL) != 0) {
+        printf("mutex init failed");
+        return 1;
+    }
+
     gtk_init(&argc, &argv);
  
     builder = gtk_builder_new();
@@ -37,7 +61,6 @@ int main(int argc, char *argv[])
     window = GTK_WIDGET(gtk_builder_get_object(builder, "chat_gui"));
     widg->history = GTK_TEXT_VIEW(gtk_builder_get_object(builder, "history"));
     widg->input = GTK_ENTRY(gtk_builder_get_object(builder, "message_input"));
-
 
     gtk_builder_connect_signals(builder, widg);
     gtk_window_set_default_size(GTK_WINDOW(window), 400, 600);
@@ -53,6 +76,7 @@ int handshake(int sockfd) {
     int n;
 
     n = read(sockfd, recvBuff, sizeof(recvBuff)-1);
+
     recvBuff[n] = 0;
     if(n < 0) {
        error_exit("Read Error");
@@ -92,72 +116,47 @@ int add_line_to_history(gpointer data) {
 
 void* listen_for_new_message(GtkTextView* history) {
     fd_set rfds; //FD to listen for new activity on
-    struct sockaddr_in cli_addr;
-    socklen_t clilen = 0;
     struct timeval tv;
-    char* restrict ip_conn;
-    char* restrict ip_server;
-    h_update hist_update;
     char buffer[BUFFERSIZE];
-    int retval = 0, newsockfd = 0, n = 0;
-
-    hist_update.history = history;
+    int retval = 0, newsockfd = 0, n = 0, maxfd = -1;
+    h_update hist_update;
 
     tv.tv_sec = 7;  /* 7 Secs read Timeout */
     tv.tv_usec = 0;
 
-    FD_ZERO(&rfds);
-    FD_SET(sockfd_msg, &rfds);
+    hist_update.history = history;
+
     while (1) {
+        FD_ZERO(&rfds);
+        FD_SET(sockfd_msg, &rfds);
+        FD_SET(sockfd_msg_interrupt[1], &rfds);
+
+        maxfd = (sockfd_msg > sockfd_msg_interrupt[1]) ? sockfd_msg : sockfd_msg_interrupt;
         memset(&buffer, 0, sizeof(buffer));
-        retval = select(sockfd_msg+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
+        retval = select(maxfd+1, &rfds, NULL, NULL, NULL); //Wait for activity on the listening port
 
-        switch (retval) {
-            case -1: //Something went wrong
-                error_exit("ERROR on select");
-                break;
-            case 1: //Connection was made
-                printf("Connection is available\n");
-                //Accept the connction
-                newsockfd = accept(sockfd_msg, (struct sockaddr *)&cli_addr, &clilen);
-
-                ip_conn = malloc(sizeof(char)*BUFFERSIZE);
-                ip_server = malloc(sizeof(char)*BUFFERSIZE);
-                inet_ntop(AF_INET, &cli_addr.sin_addr, ip_conn, BUFFERSIZE);
-                inet_ntop(AF_INET, &server_addr.sin_addr, ip_server, BUFFERSIZE);
-
-                //Message from someone in the pool
-                if (strncmp(ip_conn, ip_server, strlen(ip_server)) == 0) {
-                    //Only allowed to wait for ~7 seconds for confirmation message
-                    setsockopt(newsockfd, SOL_SOCKET, SO_RCVTIMEO, (char *)&tv, sizeof(struct timeval));
-                    //there was some problem accepting this connection
-                    if (newsockfd < 0) {
-                        error_exit("ERROR on accept");
-                    }
-
-                    n = read(newsockfd, buffer, BUFFERSIZE);
-                    if (n < 0) { 
-                        printf("ERROR reading from socket\n");
-                        close(newsockfd);
-                        continue;
-                    }
-                    hist_update.new_text = buffer;
-
-                    gdk_threads_add_idle(&add_line_to_history, (gpointer)&hist_update);
-                    printf("%s\n", buffer);
-                }
-                free(ip_conn);
-                free(ip_server);
-                
-                break;
-            default:
-                printf("Not sure what happened here");
-                break;
+        if (retval == -1) {
+            error_exit("ERROR on select");
         }
+
+        if (FD_ISSET(sockfd_msg_interrupt[1])) {
+            close(sockfd_msg);
+            return NULL;
+        }
+
+        printf("Connection is available - Message\n");
+        n = read(sockfd_msg, buffer, BUFFERSIZE);
+        if (n < 0) {
+            error_exit("ERROR on read");
+        }
+
+        hist_update.new_text = buffer;
+        gdk_threads_add_idle(&add_line_to_history, (gpointer)&hist_update);
     }
+
     return NULL;
 }
- 
+
 // called when window is closed
 G_MODULE_EXPORT void on_chat_gui_destroy()
 {
@@ -172,14 +171,16 @@ G_MODULE_EXPORT void send_message(GtkButton* button, gpointer user_data)
     if (connected) {
         write(sockfd_msg, entry_text, strlen(entry_text));
         printf("Message sent\n");
+    } else {
+        //Not connected message
     }
     gtk_entry_set_text(point->input, "");
 }
 
-G_MODULE_EXPORT void on_server_conn_activate()
+G_MODULE_EXPORT void on_server_conn_activate(GtkMenuButton* button, gpointer user_data)
 {
     if (!connected) {
-        int shake = 0;
+        int shake = 0, err = 0;
         char server[] = "cis4110chatserver.davidbuckleyprogrammer.me";
         char* restrict server_ip;
         char recvBuff[BUFFERSIZE];
@@ -225,20 +226,31 @@ G_MODULE_EXPORT void on_server_conn_activate()
         if (!shake) {
             error_exit("Unable to establish link with server");
         }
-        //spawn thread to listen for messages
+
+        err = pthread_create(&message_thread, NULL, &listen_for_new_message, (Widgets*)user_data->history);
+        if (err != 0) {
+            error_exit("Can't create thread");
+        }
+    } else {
+        //Already connected
     }
 }
 
-G_MODULE_EXPORT void on_server_diss_activate()
+G_MODULE_EXPORT void on_server_diss_activate(GtkMenuButton* button, gpointer user_data)
 {
     if (connected) {
         printf("Disconnecting to server...\n");
+
+        write(sockfd_msg_interrupt[0], "close", 5); //Will cause message listener to kill itself
+        write(sockfd_conn, "DISCONNECT", 10);
+        close(sockfd_conn);
+
         connected = 0;
-        sockfd_conn = 0;
-        sockfd_msg = 0;
 
-
-        //request to be taken out of the pool, then kill thread
+        sockfd_conn = -1;
+        sockfd_msg = -1;
+    } else {
+        //Not currently connected
     }
 }
 
