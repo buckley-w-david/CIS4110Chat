@@ -129,7 +129,7 @@ int add_line_to_history(gpointer data) {
     strncat(hist_buffer, time_buffer, strlen(time_buffer));
     strncat(hist_buffer, ":\n", 2);
     strncat(hist_buffer, history_update->new_text, BUFFERSIZE);
-    strncat(hist_buffer, "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n", 39);
+    strncat(hist_buffer, "\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n\0", 40);
 
     GtkTextView* textview;
     GtkTextIter ei;
@@ -138,11 +138,13 @@ int add_line_to_history(gpointer data) {
     GtkTextBuffer* buff;
 
     //get the textview
+    printf("Getting previous text...\n");
     textview = GTK_TEXT_VIEW(history_update->history);
     buff = gtk_text_view_get_buffer(GTK_TEXT_VIEW(textview));
     gtk_text_buffer_get_end_iter(buff, &ei);
 
     //append the message
+    printf("Trying to add message...\n");
     gtk_text_buffer_insert(buff, &ei, sendme, -1);
     mk = gtk_text_buffer_get_mark (buff, "insert");
     gtk_text_view_scroll_to_mark (GTK_TEXT_VIEW (textview), mk, 0.0, FALSE, 0.0, 0.0);
