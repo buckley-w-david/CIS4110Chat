@@ -74,6 +74,7 @@ int main(int argc, char *argv[])
         printf("Enter message: ");
         fgets(buffer, BUFFERSIZE, stdin);
 
+	buffer[strlen(buffer)-1] = '\0';
         if (strcmp(buffer, "!QUIT") == 0) {
             break;
         } else if (strcmp(buffer, "!DISS") == 0) {
@@ -158,7 +159,7 @@ void* listen_for_new_message() {
             sever_connection();
             return NULL;
         }
-        printf("Message recieved: \"%s\"", buffer);
+        printf("Message recieved: \"%s\"\n", buffer);
     }
 
     return NULL;
