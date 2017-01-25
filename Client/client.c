@@ -20,6 +20,8 @@ int sockfd_msg_interrupt[2];
 struct sockaddr_in server_conn;
 struct sockaddr_in server_msg;
 
+char server[] = "ec2-35-165-128-169.us-west-2.compute.amazonaws.com";//"cis4110chatserver.davidbuckleyprogrammer.me";
+
 int error_exit(char* message) {
     gtk_main_quit();
 
@@ -223,7 +225,6 @@ G_MODULE_EXPORT void on_server_conn_activate(GtkMenuButton* button, gpointer use
     pthread_mutex_lock(&connection_lock);
         if (!connected) {
             int shake = 0, err = 0;
-            char server[] = "cis4110chatserver.davidbuckleyprogrammer.me";
             char* restrict server_ip;
             char recvBuff[BUFFERSIZE];
 
