@@ -177,7 +177,7 @@ void* listen_for_new_message(void* history) {
 
         if (FD_ISSET(sockfd_msg_interrupt[0], &rfds)) {
             printf("No longer listening for messages\n");
-            //close(sockfd_msg);
+            n = read(sockfd_msg_interrupt[0], buffer, BUFFERSIZE);
             return NULL;
         }
 
