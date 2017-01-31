@@ -36,6 +36,8 @@ typedef struct text_vars {
 typedef struct history_update {
 	GtkTextView* history;
 	char* new_text;
+	char* id;
+	int id_size;
 }h_update;
 
 typedef struct con {

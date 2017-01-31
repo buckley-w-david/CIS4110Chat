@@ -1,0 +1,40 @@
+Name: David Buckley
+Student ID: 0894593
+Date: January 31st, 2017
+
+Building:
+To build the server, simply navigate to the 'Server' subdirectory via a terminal, and run the `make` command. this will compile the program into an executable called 'server'
+
+To building the client the instructions are much the same, except that it depends on the `libgtk-3-dev` library for the gui compnents, so that must be insalled on the system, as well as the `pkg-config` package for finding the library during compilation.
+
+------------------------------------------------------------------------------------------
+
+Running:
+To run the server, simply run the executable via the command `./server`. It requires no arguements.
+
+For the server to correctly function, the ports 5000 and 5001 must be forwarded to the machine it's running on via the router it is connected to.
+
+I currently have the server running on an AWS server, address 'ec2-35-165-128-169.us-west-2.compute.amazonaws.com'.
+
+To run the client, simply run the executable via the command `./client`. It requires no arguments.
+
+------------------------------------------------------------------------------------------
+
+How to use:
+The server requires no instructions to use, once run it will function correctly. To quit simply type the character 'q' into the console and press enter.
+
+The functions of the client are as follows:
+	1. Before the client can send or recieve messages, it must connect to the server, this can be done via the 'Connect to Server' item in the 'Connect' menu. To disconnect from the server it is the same, except via the 'Disconnect from Server' item.
+
+	2. Once the client is connected, they can type messages in the text box at the bottom of the screen, and either press the send button or press the enter button to send them to the server.
+
+	3. When a message is recieved from the server, it will display in the larger text box above the sending box with a timestamp, and be either from 'Anonymous', meaning it was just a message from someone in the pool of clients currently connected, or from 'Chat Client' meaning it was a message from the client giving you information.
+
+------------------------------------------------------------------------------------------
+
+Design Choices:
+To allow for user anonymization, I decided that if there is an intermediary that connects the clients, in this case my server, which accepts the messages and passes them on to the other clients that would acomplish the goal.
+
+The clients all send messages to the server, who sends the messages to all of the clients. The clients just see that they recieved a message from the server, with no indication of what client the message came from, as the server does not send them any information regarding that.
+
+I did not get my strategy from any outside source, so there is no sources to site regarding that, however I did learn a lot of the necissary socket programming from 'https://beej.us/guide/bgnet/'
